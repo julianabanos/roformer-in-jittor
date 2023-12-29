@@ -57,7 +57,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from transformers.utils import logging
-from .configuration_roformer import RoFormerConfig
+from configuration_roformer import RoFormerConfig
 
 
 logger = logging.get_logger(__name__)
@@ -89,7 +89,7 @@ class Norm(nn.Module):
         super().__init__()
         self.eps = eps
 
-    def forward(self, x):
+    def execute(self, x):
         variance = jt.mean(jt.square(x), dim=-1, keepdims=True)
         return x / jt.sqrt(variance + self.eps)
 
@@ -145,13 +145,13 @@ class CausalLMOutputWithPoolingAndCrossAttentions(ModelOutput):
             Contains pre-computed hidden-states (key and values in the attention blocks) that can be used (see
             `past_key_values` input) to speed up sequential decoding.
     """
-    loss: Optional[jt.Var.float32()] = None
-    logits: jt.Var.float32() = None
-    pooler_output: jt.Var.float32() = None
-    past_key_values: Optional[Tuple[Tuple[jt.Var.float32()]]] = None
-    hidden_states: Optional[Tuple[jt.Var.float32()]] = None
-    attentions: Optional[Tuple[jt.Var.float32()]] = None
-    cross_attentions: Optional[Tuple[jt.Var.float32()]] = None
+    loss: Optional[jt.float32] = None
+    logits: jt.float32 = None
+    pooler_output: jt.float32 = None
+    past_key_values: Optional[Tuple[Tuple[jt.float32]]] = None
+    hidden_states: Optional[Tuple[jt.float32]] = None
+    attentions: Optional[Tuple[jt.float32]] = None
+    cross_attentions: Optional[Tuple[jt.float32]] = None
 
 
     # Copied from transformers.models.marian.modeling_marian.MarianSinusoidalPositionalEmbedding with Marian->RoFormer
@@ -179,21 +179,21 @@ class RoFormerSinusoidalPositionalEmbedding(nn.Embedding):
         )
         out.requires_grad = False  # set early to avoid an error in pytorch-1.8+
         sentinel = dim // 2 if dim % 2 == 0 else (dim // 2) + 1
-        out[:, 0:sentinel] = jt.Var.float32(np.sin(position_enc[:, 0::2]))
-        out[:, sentinel:] = jt.Var.float32(np.cos(position_enc[:, 1::2]))
-        out.detach_()
+        out[:, 0:sentinel] = jt.Var.float32(jt.sin(position_enc[:, 0::2]))
+        out[:, sentinel:] = jt.Var.float32(jt.cos(position_enc[:, 1::2]))
+
+        out.detach()
         return out
 
     @jt.no_grad()
-    def forward(self, seq_len: int, past_key_values_length: int = 0):
+    def execute(self, seq_len: int, past_key_values_length: int = 0):
         """`input_ids_shape` is expected to be [bsz x seqlen]."""
         positions = jt.arange(
             past_key_values_length,
             past_key_values_length + seq_len,
             dtype=jt.Var.int64,
-            device=self.weight.device,
         )
-        return super().forward(positions)
+        return super().execute(positions)
 
 def load_tf_weights_in_roformer(model, config, tf_checkpoint_path):
     """Load tf checkpoints in a pytorch model."""
@@ -293,7 +293,7 @@ class RoFormerEmbeddings(nn.Module):
         self.LayerNorm = nn.LayerNorm(config.embedding_size, eps=config.layer_norm_eps) if config.norm_type=="layer_norm" else Norm(eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, input_ids=None, token_type_ids=None, inputs_embeds=None):
+    def execute(self, input_ids=None, token_type_ids=None, inputs_embeds=None):
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -348,7 +348,7 @@ class RoFormerSelfAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(
+    def execute(
         self,
         hidden_states,
         attention_mask=None,
@@ -409,7 +409,7 @@ class RoFormerSelfAttention(nn.Module):
 
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         if attention_mask is not None:
-            # Apply the attention mask is (precomputed for all layers in RoFormerModel forward() function)
+            # Apply the attention mask is (precomputed for all layers in RoFormerModel execute() function)
             attention_scores = attention_scores + attention_mask
 
         # Normalize the attention scores to probabilities.
@@ -455,7 +455,7 @@ class RoFormerSelfOutput(nn.Module):
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) if config.norm_type=="layer_norm" else Norm(eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states, input_tensor):
+    def execute(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
@@ -494,7 +494,7 @@ class RoFormerAttention(nn.Module):
         self.pruned_heads = self.pruned_heads.union(heads)
 
     # End Copy
-    def forward(
+    def execute(
         self,
         hidden_states,
         attention_mask=None,
@@ -526,12 +526,9 @@ class RoFormerIntermediate(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size, bias=config.use_bias)
-        if isinstance(config.hidden_act, str):
-            self.intermediate_act_fn = ACT2FN[config.hidden_act]
-        else:
-            self.intermediate_act_fn = config.hidden_act
+        self.intermediate_act_fn = nn.gelu
 
-    def forward(self, hidden_states):
+    def execute(self, hidden_states):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.intermediate_act_fn(hidden_states)
         return hidden_states
@@ -545,7 +542,7 @@ class RoFormerOutput(nn.Module):
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) if config.norm_type=="layer_norm" else Norm(eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states, input_tensor):
+    def execute(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
@@ -569,7 +566,7 @@ class RoFormerLayer(nn.Module):
         self.intermediate = RoFormerIntermediate(config)
         self.output = RoFormerOutput(config)
 
-    def forward(
+    def execute(
         self,
         hidden_states,
         attention_mask=None,
@@ -666,7 +663,7 @@ class RoFormerEncoder(nn.Module):
         )
         self.gradient_checkpointing = False
 
-    def forward(
+    def execute(
         self,
         hidden_states,
         attention_mask=None,
@@ -776,7 +773,7 @@ class RoFormerPredictionHeadTransform(nn.Module):
             self.transform_act_fn = config.hidden_act
         self.LayerNorm = nn.LayerNorm(config.embedding_size, eps=config.layer_norm_eps)
 
-    def forward(self, hidden_states):
+    def execute(self, hidden_states):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.transform_act_fn(hidden_states)
         hidden_states = self.LayerNorm(hidden_states)
@@ -787,7 +784,7 @@ class RoFormerV2LMPredictionHead(nn.Module):
         super().__init__()
         self.decoder = nn.Linear(config.embedding_size, config.vocab_size, bias=False)
 
-    def forward(self, hidden_states):
+    def execute(self, hidden_states):
         return self.decoder(hidden_states)
 
 
@@ -805,7 +802,7 @@ class RoFormerLMPredictionHead(nn.Module):
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias
 
-    def forward(self, hidden_states):
+    def execute(self, hidden_states):
         hidden_states = self.transform(hidden_states)
         hidden_states = self.decoder(hidden_states)
         return hidden_states
@@ -816,7 +813,7 @@ class RoFormerOnlyMLMHead(nn.Module):
         super().__init__()
         self.predictions = RoFormerLMPredictionHead(config) if config.norm_type=="layer_norm" else RoFormerV2LMPredictionHead(config)
 
-    def forward(self, sequence_output):
+    def execute(self, sequence_output):
         prediction_scores = self.predictions(sequence_output)
         return prediction_scores
 
@@ -828,7 +825,7 @@ class RoFormerPooler(nn.Module):
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = ACT2FN[config.pooler_activation]
 
-    def forward(self, hidden_states):
+    def execute(self, hidden_states):
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
         first_token_tensor = hidden_states[:, 0]
@@ -1052,7 +1049,7 @@ class RoFormerModel(RoFormerPreTrainedModel):
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         batch_size, seq_length = input_shape
-        device = input_ids.device if input_ids is not None else inputs_embeds.device
+        # device = input_ids.device if input_ids is not None else inputs_embeds.device
 
         # past_key_values_length
         past_key_values_length = (
@@ -1061,15 +1058,15 @@ class RoFormerModel(RoFormerPreTrainedModel):
 
         if attention_mask is None:
             attention_mask = jt.ones(
-                ((batch_size, seq_length + past_key_values_length)), device=device
+                ((batch_size, seq_length + past_key_values_length))
             )
         if token_type_ids is None:
-            token_type_ids = jt.zeros(input_shape, dtype=jt.Var.int64, device=device)
+            token_type_ids = jt.zeros(input_shape, dtype=jt.Var.int64)
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask: jt.Var = self.get_extended_attention_mask(
-            attention_mask, input_shape, device, past_key_values_length
+            attention_mask, input_shape, past_key_values_length
         )
 
         # If a 2D or 3D attention mask is provided for the cross-attention
@@ -1082,7 +1079,7 @@ class RoFormerModel(RoFormerPreTrainedModel):
             ) = encoder_hidden_states.size()
             encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
             if encoder_attention_mask is None:
-                encoder_attention_mask = jt.ones(encoder_hidden_shape, device=device)
+                encoder_attention_mask = jt.ones(encoder_hidden_shape)
             encoder_extended_attention_mask = self.invert_attention_mask(
                 encoder_attention_mask
             )
@@ -1132,13 +1129,13 @@ class RoFormerModel(RoFormerPreTrainedModel):
         )
 
     # 添加了个past_key_values_length
-    def get_extended_attention_mask(self, attention_mask, input_shape, device, past_key_values_length):
+    def get_extended_attention_mask(self, attention_mask, input_shape, past_key_values_length):
         if attention_mask.dim() == 3:
             extended_attention_mask = attention_mask[:, None, :, :]
         elif attention_mask.dim() == 2:
             if self.config.is_decoder and past_key_values_length > 0: # 第一次编码的时候不需要使用decoder mask，之后的需要decoder mask。
                 extended_attention_mask = self.create_extended_attention_mask_for_decoder(
-                    input_shape, attention_mask, device
+                    input_shape, attention_mask
                 )
             else:
                 extended_attention_mask = attention_mask[:, None, None, :]
