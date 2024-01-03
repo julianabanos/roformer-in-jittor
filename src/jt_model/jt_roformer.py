@@ -120,7 +120,7 @@ class Attention(Module):
         attention_output = self.output(self_output, hidden_states)
         return attention_output
 
-
+# DONE? (should be, i need to run it)
 class SelfAttention(Module):
     def __init__(self, config):
         super(SelfAttention, self).__init__()
@@ -145,7 +145,7 @@ class SelfAttention(Module):
         self.rotary_value = config.rotary_value
 
         # reshape and permute the dims to prepare for the attention head splitting
-        def transpose_for_scores(self, x):
+        def transpose_for_scores(self, x: jt.Var):
             new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
             x = x.reshape(*new_x_shape)
             return x.permute(0, 2, 1, 3)
@@ -154,7 +154,11 @@ class SelfAttention(Module):
         def apply_rotary(x, sinusoidal_pos):
             sin, cos = sinusoidal_pos
             x1, x2 = x[..., 0::2], x[..., 1::2]
-            return jt.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).reshape(*x.shape) # TODO CHECK
+            x1_rot = x1 * cos - x2 * sin
+            x2_rot = x1 * sin + x2 * cos
+            x = jt.stack([x1_rot, x2_rot], dim=-1)
+            x = x.flatten(-2, -1)
+            return x
         
         def execute(
             self,
@@ -219,7 +223,7 @@ class SelfAttention(Module):
                 attention_probs = attention_probs * head_mask
 
             # context layer
-            context_layer = jt.matmul(attention_probs, value_layer)
+            context_layer: jt.Var = jt.matmul(attention_probs, value_layer)
 
             context_layer = context_layer.permute(0, 2, 1, 3).reshape(hidden_states.shape) # TODO: CHECK
             new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
