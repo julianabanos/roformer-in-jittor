@@ -9,9 +9,9 @@ import os
 # jt.flags.use_cuda = 1
 
 # params
-embedding_size = 768
-embedding_num = 50000
-intermediate_size = 3072
+# embedding_size = 768
+# embedding_num = 50000
+# intermediate_size = 3072
 
 # roformer model
 
@@ -19,10 +19,10 @@ intermediate_size = 3072
 # predictions: transform, decoder
 
 class Model(Module):
-    def __init__(self):
+    def __init__(self, config):
         super(Model, self).__init__()
-        self.roformer = Roformer()
-        self.cls = Cls()
+        self.roformer = Roformer(config)
+        self.cls = Cls(config)
 
     def execute(self, input_ids, token_type_ids, attention_mask):
         # input_ids: (batch_size, seq_len)
@@ -36,10 +36,10 @@ class Model(Module):
 #####################################################
 
 class Roformer(Module):
-    def __init__(self):
+    def __init__(self, config):
         super(Roformer, self).__init__()
-        self.embeddings = Embeddings()
-        self.encoder = Encoder()
+        self.embeddings = Embeddings(config)
+        self.encoder = Encoder(config)
 
     def execute(self, input_ids, token_type_ids, attention_mask):
         # input_ids: (batch_size, seq_len)
@@ -57,7 +57,7 @@ class Embeddings(Module):
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.embedding_size)
         
         # LayerNorm
-        self.LayerNorm = nn.LayerNorm(embedding_size, eps=config.layer_norm_eps) if config.norm_type == 'layer_norm' else Norm(eps=config.layer_norm_eps)
+        self.LayerNorm = nn.LayerNorm(config.embedding_size, eps=config.layer_norm_eps) if config.norm_type == 'layer_norm' else Norm(eps=config.layer_norm_eps)
         # Dropout
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
@@ -84,9 +84,9 @@ class Embeddings(Module):
         return embeddings
 
 class Encoder(Module):
-    def __init__(self):
+    def __init__(self, config):
         super(Encoder, self).__init__()
-        self.layer = nn.ModuleList([Layer() for _ in range(12)])
+        self.layer = nn.ModuleList([Layer(config) for _ in range(12)])
 
     def execute(self, hidden_states, attention_mask):
         for layer_module in self.layer:
@@ -95,11 +95,11 @@ class Encoder(Module):
     
 
 class Layer(Module):
-    def __init__(self):
+    def __init__(self, config):
         super(Layer, self).__init__()
-        self.attention = Attention()
-        self.intermediate = Intermediate()
-        self.output = Output(intermediate_size, embedding_size)
+        self.attention = Attention(config)
+        self.intermediate = Intermediate(config)
+        self.output = Output(config)
 
     def execute(self, hidden_states, attention_mask):
         attention_output = self.attention(hidden_states, attention_mask)
@@ -110,10 +110,10 @@ class Layer(Module):
 
 
 class Attention(Module):
-    def __init__(self):
+    def __init__(self, config):
         super(Attention, self).__init__()
-        self.self = Self()
-        self.output = Output(embedding_size, embedding_size)
+        self.self = Self(config)
+        self.output = Output2(config)
 
     def execute(self, hidden_states, attention_mask):
         self_output = self.self(hidden_states, attention_mask)
@@ -141,7 +141,7 @@ class Self(Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        self.is_decoder = config.is_decoder
+        self.is_decoder = True # TODO: CHECK config.is_decoder
         self.rotary_value = config.rotary_value
 
         # reshape and permute the dims to prepare for the attention head splitting
@@ -231,6 +231,19 @@ class Self(Module):
                 outputs = outputs + (past_key_value,)
             return outputs
     
+class Output2(Module):
+    def __init__(self, config):
+        super(Output2, self).__init__()
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=config.use_bias)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) if config.norm_type == 'layer_norm' else Norm(eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def execute(self, hidden_states, input_tensor):
+        hidden_states = self.dense(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        return hidden_states
+    
 # DONE
 class Output(Module):
     def __init__(self, config):
@@ -272,7 +285,7 @@ class Intermediate(Module):
         return hidden_states
     
 class Norm(Module):
-    def __init__(self, eps = 1e-12):
+    def __init__(self, eps):
         super(Norm, self).__init__()
         self.eps = eps
 
@@ -284,21 +297,21 @@ class Norm(Module):
 #####################################################
         
 class Cls(Module):
-    def __init__(self):
+    def __init__(self, config):
         super(Cls, self).__init__()
-        self.predictions = ClsPredictions()
+        self.predictions = ClsPredictions(config)
 
     def execute(self, hidden_states):
         hidden_states = self.predictions(hidden_states)
         return hidden_states
         
 class ClsPredictions(Module):
-    def __init__(self):
+    def __init__(self, config):
         super(ClsPredictions, self).__init__()
-        self.transform = ClsTransform()
+        self.transform = ClsTransform(config)
         # Assuming the output dimension for the decoder matches the vocabulary size or embedding_num
-        self.decoder = nn.Linear(embedding_size, embedding_num)
-        self.bias = jt.zeros(embedding_num)
+        self.decoder = nn.Linear(config.embedding_size, config.vocab_size)
+        self.bias = jt.zeros(config.vocab_size)
 
     def execute(self, hidden_states):
         hidden_states = self.transform(hidden_states)
@@ -306,37 +319,13 @@ class ClsPredictions(Module):
         return hidden_states
 
 class ClsTransform(Module):
-    def __init__(self):
+    def __init__(self, config):
         super(ClsTransform, self).__init__()
-        self.dense = nn.Linear(embedding_size, embedding_size)
-        self.LayerNorm = nn.LayerNorm(embedding_size, eps=1e-12)
+        self.dense = nn.Linear(config.embedding_size, config.embedding_size)
+        self.LayerNorm = nn.LayerNorm(config.embedding_size, eps=config.eps)
 
     def execute(self, hidden_states):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.LayerNorm(hidden_states)
         return hidden_states
-
-
-model = Model()
-path = "/root/2021080087/roformer_ann_2023/checkpoints/chinese_roformer_L-12_H-768_A-12/pytorch_dump/pytorch_model.bin"
-model.load(path)
-
-# # setup for model
-# model.eval()
-# model.is_training = False
-
-
-# # run the model
-# input_ids = jt.array([[1, 2, 3], [4, 5, 6]])
-# token_type_ids = jt.array([[0, 0, 0], [1, 1, 1]])
-# attention_mask = jt.array([[1, 1, 1], [1, 1, 1]])
-# output = model(input_ids, token_type_ids, attention_mask)
-# print(output.shape)
-
-
-
-# to see all the parameters
-# print(model.roformer.embeddings.word_embeddings.weight[0][0])
-# for name, param in model.named_parameters():
-#     print(name, param.shape)
 

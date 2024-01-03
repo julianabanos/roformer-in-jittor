@@ -1,18 +1,27 @@
 from transformers import RoFormerTokenizer
-from modeling_jt_roformer import RoFormerModel, RoFormerConfig
 import jittor as jt
-tokenizer = RoFormerTokenizer('src/pytorch_dump/vocab.txt')
-# tokenizer.tokenize("今天。")
-# print(tokenizer.tokenize("天气。"))
+import json
+from configuration_roformer import RoFormerConfig
+from jt_model.jt_roformer import Model
 
 # use cuda
 jt.flags.use_cuda = 1
 
 model_ckpt_path = "src/pytorch_dump/pytorch_model.bin"
-config_path = "src/pytorch_dump/config.json"
-config = RoFormerConfig.from_json_file(config_path)
-model = RoFormerModel(config)
-model.load_state_dict(jt.load(model_ckpt_path), strict=False)
+config_path = "src/pytorch_dump/newconfig.json"
+
+config = json.load(open(config_path))
+# convert config into an object
+config = type('', (), config)()
+
+# set up tokenizer
+tokenizer = RoFormerTokenizer('src/pytorch_dump/vocab.txt')
+
+
+model = Model(config)
+path = "src/pytorch_dump/pytorch_model.bin"
+model.load(path)
+model.load_state_dict(jt.load(model_ckpt_path))
 
 # test
 input_ids = tokenizer.encode("今天天气不错")
