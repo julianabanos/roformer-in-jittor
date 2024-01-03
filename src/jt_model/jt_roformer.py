@@ -112,8 +112,8 @@ class Layer(Module):
 class Attention(Module):
     def __init__(self, config):
         super(Attention, self).__init__()
-        self.self = Self(config)
-        self.output = Output2(config)
+        self.self = SelfAttention(config)
+        self.output = SelfOutput(config)
 
     def execute(self, hidden_states, attention_mask):
         self_output = self.self(hidden_states, attention_mask)
@@ -121,9 +121,9 @@ class Attention(Module):
         return attention_output
 
 
-class Self(Module):
+class SelfAttention(Module):
     def __init__(self, config):
-        super(Self, self).__init__()
+        super(SelfAttention, self).__init__()
 
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
             raise ValueError(
@@ -230,10 +230,11 @@ class Self(Module):
             if self.is_decoder:
                 outputs = outputs + (past_key_value,)
             return outputs
-    
-class Output2(Module):
+
+# DONE
+class SelfOutput(Module):
     def __init__(self, config):
-        super(Output2, self).__init__()
+        super(SelfOutput, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=config.use_bias)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) if config.norm_type == 'layer_norm' else Norm(eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -258,19 +259,6 @@ class Output(Module):
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
     
-# DONE
-class SelfOutput(Module):
-    def __init__(self, config):
-        super(SelfOutput, self).__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=config.use_bias)
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) if config.norm_type == 'layer_norm' else Norm(eps=config.layer_norm_eps)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-
-    def execute(self, hidden_states, input_tensor):
-        hidden_states = self.dense(hidden_states)
-        hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        return hidden_states
 
 # DONE
 class Intermediate(Module):
@@ -284,6 +272,7 @@ class Intermediate(Module):
         hidden_states = self.intermediate_act_fn(hidden_states)
         return hidden_states
     
+# DONE
 class Norm(Module):
     def __init__(self, eps):
         super(Norm, self).__init__()
