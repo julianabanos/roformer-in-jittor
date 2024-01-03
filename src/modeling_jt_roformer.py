@@ -832,7 +832,7 @@ class RoFormerPooler(nn.Module):
         pooled_output = self.dense(first_token_tensor)
         pooled_output = self.activation(pooled_output)
         return pooled_output
-
+    
 
 class RoFormerPreTrainedModel(PreTrainedModel):
     """

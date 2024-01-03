@@ -80,6 +80,8 @@ ROFORMER_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all RoFormer models at https://huggingface.co/models?filter=roformer
 ]
 
+# all classes: Norm, RoFormerSinusoidalPositionalEmbedding, RoFormerEmbeddings, RoFormerSelfAttention, RoFormerSelfOutput, RoFormerAttention, RoFormerIntermediate, RoFormerOutput, RoFormerLayer, RoFormerEncoder, RoFormerPredictionHeadTransform, RoFormerV2LMPredictionHead, RoFormerLMPredictionHead, RoFormerOnlyMLMHead, RoFormerPooler, RoFormerPreTrainedModel
+
 class Norm(nn.Module):
     def __init__(self, eps = 1e-12):
         super().__init__()
