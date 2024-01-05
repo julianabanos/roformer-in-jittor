@@ -17,13 +17,14 @@
 
 import math
 import os
-from typing import Optional
+from typing import Optional, Callable
 
 import numpy as np
 import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+import pdb
 
 from transformers.activations import ACT2FN
 from transformers.file_utils import (
@@ -53,7 +54,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from transformers.utils import logging
-from .configuration_roformer import RoFormerConfig
+from configuration_roformer import RoFormerConfig
 
 
 logger = logging.get_logger(__name__)
@@ -654,6 +655,80 @@ class RoFormerLayer(nn.Module):
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
         return layer_output
+    
+    def apply_chunking_to_forward(
+        forward_fn: Callable[..., torch.Tensor], chunk_size: int, chunk_dim: int, *input_tensors
+    ) -> torch.Tensor:
+        """
+        This function chunks the `input_tensors` into smaller input tensor parts of size `chunk_size` over the dimension
+        `chunk_dim`. It then applies a layer `forward_fn` to each chunk independently to save memory.
+
+        If the `forward_fn` is independent across the `chunk_dim` this function will yield the same result as directly
+        applying `forward_fn` to `input_tensors`.
+
+        Args:
+            forward_fn (`Callable[..., torch.Tensor]`):
+                The forward function of the model.
+            chunk_size (`int`):
+                The chunk size of a chunked tensor: `num_chunks = len(input_tensors[0]) / chunk_size`.
+            chunk_dim (`int`):
+                The dimension over which the `input_tensors` should be chunked.
+            input_tensors (`Tuple[torch.Tensor]`):
+                The input tensors of `forward_fn` which will be chunked
+
+        Returns:
+            `torch.Tensor`: A tensor with the same shape as the `forward_fn` would have given if applied`.
+
+
+        Examples:
+
+        ```python
+        # rename the usual forward() fn to forward_chunk()
+        def forward_chunk(self, hidden_states):
+            hidden_states = self.decoder(hidden_states)
+            return hidden_states
+
+
+        # implement a chunked forward function
+        def forward(self, hidden_states):
+            return apply_chunking_to_forward(self.forward_chunk, self.chunk_size_lm_head, self.seq_len_dim, hidden_states)
+        ```"""
+
+        assert len(input_tensors) > 0, f"{input_tensors} has to be a tuple/list of tensors"
+
+        # inspect.signature exist since python 3.5 and is a python method -> no problem with backward compatibility
+        num_args_in_forward_chunk_fn = len(inspect.signature(forward_fn).parameters)
+        if num_args_in_forward_chunk_fn != len(input_tensors):
+            raise ValueError(
+                f"forward_chunk_fn expects {num_args_in_forward_chunk_fn} arguments, but only {len(input_tensors)} input "
+                "tensors are given"
+            )
+
+        if chunk_size > 0:
+            tensor_shape = input_tensors[0].shape[chunk_dim]
+            for input_tensor in input_tensors:
+                if input_tensor.shape[chunk_dim] != tensor_shape:
+                    raise ValueError(
+                        f"All input tenors have to be of the same shape: {tensor_shape}, "
+                        f"found shape {input_tensor.shape[chunk_dim]}"
+                    )
+
+            if input_tensors[0].shape[chunk_dim] % chunk_size != 0:
+                raise ValueError(
+                    f"The dimension to be chunked {input_tensors[0].shape[chunk_dim]} has to be a multiple of the chunk "
+                    f"size {chunk_size}"
+                )
+
+            num_chunks = input_tensors[0].shape[chunk_dim] // chunk_size
+
+            # chunk input tensor into tuples
+            input_tensors_chunks = tuple(input_tensor.chunk(num_chunks, dim=chunk_dim) for input_tensor in input_tensors)
+            # apply forward fn to every tuple
+            output_chunks = tuple(forward_fn(*input_tensors_chunk) for input_tensors_chunk in zip(*input_tensors_chunks))
+            # concatenate output at same dimension
+            return torch.cat(output_chunks, dim=chunk_dim)
+
+        return forward_fn(*input_tensors)
 
 
 class RoFormerEncoder(nn.Module):
@@ -750,6 +825,7 @@ class RoFormerEncoder(nn.Module):
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
+        # pdb.set_trace()
         if not return_dict:
             return tuple(
                 v
@@ -1107,6 +1183,7 @@ class RoFormerModel(RoFormerPreTrainedModel):
             token_type_ids=token_type_ids,
             inputs_embeds=inputs_embeds,
         )
+    
         if hasattr(self, "embeddings_project"):
             embedding_output = self.embeddings_project(embedding_output)
 
@@ -1122,9 +1199,10 @@ class RoFormerModel(RoFormerPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.add_pooling_layer else None
-
+        
         if not return_dict:
             return (sequence_output, pooled_output) + encoder_outputs[1:]
 
@@ -1434,7 +1512,7 @@ class RoFormerForCausalLM(RoFormerPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-
+        # pdb.set_trace()
         sequence_output = outputs[0]
         prediction_scores = self.cls(sequence_output)
 
@@ -1500,6 +1578,71 @@ class RoFormerForCausalLM(RoFormerPreTrainedModel):
                 + layer_past[2:],
             )
         return reordered_past
+    
+    def generate2(self, input_ids, token_type_ids=None, attention_mask=None, top_p=0.95, max_length=128, do_sample=True):
+        # Assuming that the Roformer model's output can be used directly for token generation.
+        # This method generates one token at a time using top-p sampling.
+
+        # Start with the provided input_ids
+
+        generated = input_ids
+
+        # Iterate until max_length is reached
+        for _ in range(max_length):
+            # # Get the model's output
+            # print(generated.size())
+            # print(attention_mask.size())  
+            
+            # outputs = self.roformer(input_ids=generated, token_type_ids=token_type_ids, attention_mask=attention_mask, output_attentions=False, output_hidden_states=False, return_dict=True)
+            with torch.no_grad():
+                outputs = self(input_ids=generated, token_type_ids=token_type_ids, attention_mask=attention_mask, output_attentions=False, output_hidden_states=False, return_dict=True)
+            
+            # Assume the last layer output is the logits (adjust according to your model's specifics)
+            # logits = outputs[0][:, -1, :]
+
+            logits = outputs.logits[:, -1, :] # TODO: CHECK 
+            # pdb.set_trace()
+
+            # Apply top-p sampling to the logits to get the next token
+            filtered_logits = self.top_p_filtering(logits, top_p)
+            # filtered_logits = logits
+            if do_sample:
+                probabilities = nn.functional.softmax(filtered_logits, dim=-1)
+                next_token = torch.multinomial(probabilities, num_samples=1)
+                # pdb.set_trace()
+            else:
+                # Use the most likely next token if do_sample is False
+                next_token = torch.argmax(filtered_logits, dim=-1)
+
+            # Concatenate the new token to the generated sequence
+            generated = torch.cat((generated, next_token), dim=1)
+            attention_mask = torch.cat(
+                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
+                )
+            token_type_ids = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
+
+            # pdb.set_trace()
+
+            # Stop if the sequence is getting too long
+            if generated.size(1) > max_length:
+                break
+
+        # pdb.set_trace()
+
+        return generated
+
+    def top_p_filtering(self, logits, top_p):
+        sorted_logits, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+        cumulative_probs = torch.cumsum(nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
+
+        sorted_indices_to_remove = cumulative_probs > top_p
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+
+        indices_to_remove = torch.zeros_like(logits, dtype=torch.bool).scatter_(-1, sorted_indices, sorted_indices_to_remove)
+        logits[indices_to_remove] = float('-inf')
+        return logits
+
 
 
 class RoFormerClassificationHead(nn.Module):
