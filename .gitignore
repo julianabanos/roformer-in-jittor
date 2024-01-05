@@ -2,3 +2,7 @@ checkpoints
 CAIL2019-SCM
 chinese_roformer_L-12_H-768_A-12.zip
 src/pytorch_dump
+src/roformer_chinese_base
+src/roformer_chinese_sim_char_base
+src/__pycache__
+src/jt_model/__pycache__

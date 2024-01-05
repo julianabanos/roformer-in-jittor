@@ -1,4 +1,4 @@
-from transformers import RoFormerTokenizer
+from transformers import RoFormerTokenizer, RoFormerForSequenceClassification
 import jittor as jt
 import json
 from configuration_roformer import RoFormerConfig
@@ -7,11 +7,12 @@ import numpy as np
 import pdb
 import time
 import jieba
+import torch
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
 
 MAX_LENGTH = 512
-
-# use cuda
-jt.flags.use_cuda = 1
 
 def load_data(path):
     data = []
@@ -43,9 +44,11 @@ config.num_labels = 2
 # set up tokenizer
 tokenizer = RoFormerTokenizer.from_pretrained(vocab)
 
-model = ModelSeqClassifier(config)
+# model = ModelSeqClassifier(config)
+model = RoFormerForSequenceClassification.from_pretrained(pretrained_model, config=config_path)
+model = model.to(device)
 
-model.load(pretrained_model)
+# model.load(pretrained_model)
 
 # data loading
 test_path = "/root/2021080087/roformer_ann_2023/CAIL2019-SCM/test.json"
@@ -65,7 +68,7 @@ def train(model, data, optimizer, loss_fn, epoch):
     total_loss = 0
 
     for batch_idx, batch in enumerate(data):
-        # optimizer.zero_grad() # encode_plus?
+        optimizer.zero_grad() # encode_plus?
         # Prepare batch data
         input_ids = []
         attention_mask = []
@@ -77,17 +80,16 @@ def train(model, data, optimizer, loss_fn, epoch):
                 padding="max_length", 
                 truncation=True,
                 max_length=MAX_LENGTH,  # Define MAX_LENGTH according to your model's requirements
-                return_tensors="np"
+                return_tensors="pt"
             )
             input_ids.append(tokenized["input_ids"][0])
             attention_mask.append(tokenized["attention_mask"][0])
             labels.append(0 if sample['label'] == 'B' else 1)
         # inputsAC = tokenizer(batch['A'] + tokenizer.sep_token + batch['C'], padding="max_length", return_tensors="np")
-
-        # process for jittor
-        input_ids = jt.Var(np.array(input_ids))
-        attention_mask = jt.Var(np.array(attention_mask))
-        labels = jt.Var(np.array(labels))
+            
+        input_ids = torch.stack(input_ids).to(device)
+        attention_mask = torch.stack(attention_mask).to(device)
+        labels = torch.tensor(labels).to(device)
 
         outputs = model(input_ids, attention_mask=attention_mask)
 
@@ -96,8 +98,8 @@ def train(model, data, optimizer, loss_fn, epoch):
         loss = loss_fn(outputs.logits, labels)
 
         # pdb.set_trace()
-
-        optimizer.backward(loss)
+        loss.backward()
+        optimizer.step()
 
         train_losses.append(loss.item())
         total_loss += loss.item()
@@ -114,7 +116,7 @@ def test(model, data, loss_fn):
     correct = 0
     total_samples = 0
 
-    with jt.no_grad():
+    with torch.no_grad():
         for batch_idx, batch in enumerate(data):
             # Prepare batch data
             input_ids = []
@@ -127,15 +129,15 @@ def test(model, data, loss_fn):
                     padding="max_length", 
                     truncation=True,
                     max_length=MAX_LENGTH,
-                    return_tensors="np"
+                    return_tensors="pt"
                 )
                 input_ids.append(tokenized["input_ids"][0])
                 attention_mask.append(tokenized["attention_mask"][0])
                 labels.append(0 if sample['label'] == 'B' else 1)
 
-            input_ids = jt.Var(np.array(input_ids))
-            attention_mask = jt.Var(np.array(attention_mask))
-            labels = jt.Var(np.array(labels))
+            input_ids = torch.stack(input_ids).to(device)
+            attention_mask = torch.stack(attention_mask).to(device)
+            labels = torch.tensor(labels).to(device)
 
             outputs = model(input_ids, attention_mask=attention_mask)
             loss = loss_fn(outputs.logits, labels)
@@ -145,23 +147,19 @@ def test(model, data, loss_fn):
 
             # Optionally calculate accuracy or other metrics here
             pred = outputs.logits.argmax(dim=1)
-            correct_predictions = jt.sum(pred[0] == labels)
-            correct += correct_predictions.item()
+            correct += pred.eq(labels).sum().item()
 
         test_loss /= total_samples
         accuracy = 100. * correct / total_samples
 
         print(f'Test set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{total_samples} ({accuracy:.0f}%)')
 
-
-
-
 # train
 epochs = 5
 lr = 2e-5
-batch_size = 4
-optimizer = jt.optim.Adam(model.parameters(), lr=lr)
-loss_fn = jt.nn.CrossEntropyLoss()
+batch_size = 8
+optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+loss_fn = torch.nn.CrossEntropyLoss()
 start_time = time.time()
 
 train_batches = list(batch_generator(train_data, batch_size))
@@ -169,12 +167,10 @@ valid_batches = list(batch_generator(valid_data, batch_size))
 test_batches = list(batch_generator(test_data, batch_size))
 
 # pdb.set_trace()
-# test(model, valid_batches, loss_fn)
+test(model, valid_batches, loss_fn)
 for epoch in range(1, epochs + 1):
     train(model, train_batches, optimizer, loss_fn, epoch)
     # if epoch % 5 == 0:
     test(model, valid_batches, loss_fn)
     print("Minutes elapsed: ", (time.time() - start_time) / 60)
 
-# save model
-model.save("model.pt")

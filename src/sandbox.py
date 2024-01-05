@@ -1,63 +1,49 @@
-import torch
-import numpy as np
+from transformers import RoFormerTokenizer
+import jittor as jt
+import json
 from configuration_roformer import RoFormerConfig
-from modeling_roformer import RoFormerForCausalLM
-from transformers import RoFormerTokenizer#, RoFormerForCausalLM, RoFormerConfig
+from jt_model.jt_roformer import ModelSeqClassifier
+import numpy as np
 import pdb
+import time
+import jieba
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-pretrained_model = "/root/2021080087/roformer_ann_2023/src/roformer_chinese_sim_char_base/pytorch_model.bin"
-config_path = "/root/2021080087/roformer_ann_2023/src/roformer_chinese_sim_char_base/config.json"
-vocab = "/root/2021080087/roformer_ann_2023/src/roformer_chinese_sim_char_base/vocab.txt"
+MAX_LENGTH = 512
+
+# use cuda
+jt.flags.use_cuda = 1
+
+def load_data(path):
+    data = []
+    with open(path, 'r', encoding='utf-8') as file:
+        for line in file:
+            try:
+                data.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON: {e}")
+    return data
+
+pretrained_model = "/root/2021080087/roformer_ann_2023/src/roformer_chinese_base/pytorch_model.bin"
+config_path = "/root/2021080087/roformer_ann_2023/src/roformer_chinese_base/config.json"
+vocab = "/root/2021080087/roformer_ann_2023/src/roformer_chinese_base/vocab.txt"
+
+config = json.load(open(config_path))
+# convert config into an object
+config = type('', (), config)()
+config.is_decoder = True
+config.add_cross_attention = True
+config.chunk_size_feed_forward = 0
+config.add_pooling_layer = True
+config.norm_type = "layer_norm"
+config.use_bias = True
+config.rotary_value = False
+config.use_cache = True
+config.num_labels = 2
+
+# set up tokenizer
 tokenizer = RoFormerTokenizer.from_pretrained(vocab)
 
-config = RoFormerConfig.from_pretrained(config_path)
-config.is_decoder = True
-config.eos_token_id = tokenizer.sep_token_id
-config.pooler_activation = "linear"
-# pdb.set_trace()
-model = RoFormerForCausalLM.from_pretrained(pretrained_model, config=config)
-model.to(device)
+model = ModelSeqClassifier(config)
+
+model.load(pretrained_model)
 model.eval()
-
-def gen_synonyms(text, n=1
-, k=20):
-    ''''含义： 产生sent的n个相似句，然后返回最相似的k个。
-    做法：用seq2seq生成，并用encoder算相似度并排序。
-    '''
-    # 寻找所有相似的句子
-    r = []
-    inputs1 = tokenizer(text, return_tensors="pt")
-
-    for _ in range(n):
-        print("Generating... ", _ , "/", n)
-        inputs1.to(device)
-        generation = model.generate(**inputs1, top_p=0.95, do_sample=True, max_length=128)
-        
-        # generation2 = model.generate2(**inputs1, top_p=0.95, do_sample=True, max_length=128)
-        
-        output = tokenizer.batch_decode(generation, skip_special_tokens=True)[0].replace(" ","").replace(text, "") # 去除空格，去除原始text文本。
-        # output = tokenizer.batch_decode(generation2, skip_special_tokens=True)[0].replace(" ","").replace(text, "") # 去除空格，去除原始text文本。
-        # print("generation: ", output)
-        # print("generation2: ", output2)
-        # pdb.set_trace()
-        r.append(output)
-
-    # pdb.set_trace()     
-
-    # 对相似的句子进行排序
-    r = [i for i in set(r) if i != text and len(i) > 0]
-    r = [text] + r
-    inputs2 = tokenizer(r, padding=True, return_tensors="pt")
-    # pdb.set_trace()
-    with torch.no_grad():
-        inputs2.to(device)
-        outputs = model(**inputs2)
-        Z = outputs.pooler_output.cpu().numpy()
-    Z /= (Z**2).sum(axis=1, keepdims=True)**0.5
-    argsort = np.dot(Z[1:], -Z[0]).argsort()    
-    return [r[i + 1] for i in argsort[:k]]
-
-
-out = gen_synonyms("广州和深圳哪个好？")
-print(out)

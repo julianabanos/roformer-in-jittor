@@ -66,7 +66,7 @@ class ModelSeqClassifier(Module):
 
         loss = None
         if labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
+            loss_fct = nn.BCELoss()
             loss = loss_fct(logits.view(-1, self.config.num_labels), labels.view(-1))
 
         return DataClassSequenceClassifier(
