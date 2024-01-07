@@ -1,7 +1,9 @@
 import math
-import jittor as jt
-from jittor import Module
-from jittor import nn
+# import jittor as jt
+# from jittor import Module
+# from jittor import nn
+import torch
+import torch.nn as nn
 import numpy as np
 import json
 import os
@@ -10,13 +12,13 @@ import warnings
 import inspect
 from typing import List, Set, Tuple
 from dataclasses import dataclass
-from .jt_dataclasses import DataClassEncoder, DataClassRoformer, DataClassCausalLM, DataClassSequenceClassifier
+from .pt_dataclasses import DataClassEncoder, DataClassRoformer, DataClassCausalLM, DataClassSequenceClassifier
 import pdb
 
-jt.flags.use_cuda = 1
+# jt.flags.use_cuda = 1
 # roformer model
 
-class ClassificationHead(Module):
+class ClassificationHead(nn.Module):
     def __init__(self, config):
         super(ClassificationHead, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
@@ -25,7 +27,7 @@ class ClassificationHead(Module):
 
         self.config = config
 
-    def execute(self, features):
+    def forward(self, features):
         x = features[:, 0, :]
         x = self.dropout(x)
         x = self.dense(x)
@@ -34,13 +36,13 @@ class ClassificationHead(Module):
         x = self.out_proj(x)
         return x
     
-class ModelSeqClassifier(Module):
+class ModelSeqClassifier(nn.Module):
     def __init__(self, config):
         super(ModelSeqClassifier, self).__init__()
         self.roformer = Roformer(config)
         self.classifier = ClassificationHead(config)
 
-    def execute(self, 
+    def forward(self, 
                 input_ids=None, 
                 attention_mask=None, 
                 token_type_ids=None, 
@@ -79,13 +81,13 @@ class ModelSeqClassifier(Module):
 
 
 
-class ModelCausalLM(Module):
+class ModelCausalLM(nn.Module):
     def __init__(self, config):
         super(ModelCausalLM, self).__init__()
         self.roformer = Roformer(config)
         self.cls = Cls(config)
 
-    def generate(self, input_ids, token_type_ids=None, attention_mask=None, top_p=0.95, max_length=128, do_sample=True):    
+    def generate(self, input_ids, token_type_ids=None, attention_mask=None, top_p=0.95, max_length=128, do_sample=True):
         # Assuming that the Roformer model's output can be used directly for token generation.
         # This method generates one token at a time using top-p sampling.
 
@@ -96,63 +98,52 @@ class ModelCausalLM(Module):
         # Iterate until max_length is reached
         for _ in range(max_length):
             # # Get the model's output
-            # outputs = self.roformer(input_ids=generated, token_type_ids=token_type_ids, attention_mask=attention_mask, output_attentions=False, output_hidden_states=False, return_dict=True)
-            with jt.no_grad():
-                outputs = self(input_ids=generated, token_type_ids=token_type_ids, attention_mask=attention_mask, output_attentions=False, output_hidden_states=False)
+            
+            with torch.no_grad():
+                outputs = self(input_ids=generated, token_type_ids=token_type_ids, attention_mask=attention_mask, output_attentions=False, output_hidden_states=False, return_dict=True)
             
             # Assume the last layer output is the logits (adjust according to your model's specifics)
-            # logits = outputs[0][:, -1, :]
-
-            logits = outputs.logits[:, -1, :] # TODO: CHECK 
-            # pdb.set_trace()
+            logits = outputs.logits[:, -1, :] 
 
             # Apply top-p sampling to the logits to get the next token
             filtered_logits = self.top_p_filtering(logits, top_p)
             # filtered_logits = logits
             if do_sample:
-                probabilities = nn.softmax(filtered_logits, dim=-1)
-                next_token = jt.multinomial(probabilities, num_samples=1)
-                # pdb.set_trace()
+                probabilities = nn.functional.softmax(filtered_logits, dim=-1)
+                next_token = torch.multinomial(probabilities, num_samples=1)
             else:
                 # Use the most likely next token if do_sample is False
-                next_token = jt.argmax(filtered_logits, dim=-1)
+                next_token = torch.argmax(filtered_logits, dim=-1)
 
             # Concatenate the new token to the generated sequence
-            generated = jt.cat((generated, next_token), dim=1)
-            attention_mask = jt.cat(
+            generated = torch.cat((generated, next_token), dim=1)
+            attention_mask = torch.cat(
                     [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=-1
                 )
-            token_type_ids = jt.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
-
-            # pdb.set_trace()
+            token_type_ids = torch.cat([token_type_ids, token_type_ids[:, -1].unsqueeze(-1)], dim=-1)
 
             # Stop if the sequence is getting too long
             if generated.size(1) > max_length:
                 break
 
+        # pdb.set_trace()
+
         return generated
 
     def top_p_filtering(self, logits, top_p):
-        # Sort the logits to identify the cutoff for top-p
-        sorted_logits, sorted_indices = jt.sort(logits, descending=True)
-        cumulative_probs = jt.cumsum(nn.softmax(sorted_logits, dim=-1), dim=-1)
-        # pdb.set_trace()
+        sorted_logits, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+        cumulative_probs = torch.cumsum(nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
 
-        # Remove tokens with a cumulative probability above the threshold (top_p)
         sorted_indices_to_remove = cumulative_probs > top_p
-        # Shift the indices to the right to keep the first token above the threshold
         sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
         sorted_indices_to_remove[..., 0] = 0
 
-        # Scatter the sorted indices to the original indexing
-        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        indices_to_remove = torch.zeros_like(logits, dtype=torch.bool).scatter_(-1, sorted_indices, sorted_indices_to_remove)
         logits[indices_to_remove] = float('-inf')
-        # pdb.set_trace()
-        # print(logits.nonzero())
         return logits
 
 
-    def execute(self, input_ids=None, attention_mask=None, token_type_ids=None, inputs_embeds=None, encoder_hidden_states=None, 
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, inputs_embeds=None, encoder_hidden_states=None, 
                 encoder_attention_mask=None, head_mask=None, cross_attn_head_mask=None, past_key_values=None, labels=None, 
                 use_cache=None, output_attentions=True, output_hidden_states=True,): #TODO: CHECK
         
@@ -209,13 +200,13 @@ class ModelCausalLM(Module):
 
 #####################################################
 
-class Roformer(Module):
+class Roformer(nn.Module):
     def __init__(self, config):
         super(Roformer, self).__init__()
-        self.config = config
-        self.config.dtype = "float16"
         self.embeddings = Embeddings(config)
         self.encoder = Encoder(config)
+        self.config = config
+        self.dtype = torch.float16
         self.add_pooling_layer = config.add_pooling_layer
 
         if self.add_pooling_layer:
@@ -235,7 +226,7 @@ class Roformer(Module):
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
-    def execute(self, input_ids=None, attention_mask=None, token_type_ids=None, head_mask=None,
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, head_mask=None,
                 inputs_embeds=None, encoder_hidden_states=None, encoder_attention_mask=None, past_key_values=None,
                 use_cache=None, output_attentions=True, output_hidden_states=True, return_dict=True):
 
@@ -277,15 +268,15 @@ class Roformer(Module):
         )
 
         if attention_mask is None:
-            attention_mask = jt.ones(
+            attention_mask = torch.ones(
                 ((batch_size, seq_length + past_key_values_length))
             )
         if token_type_ids is None:
-            token_type_ids = jt.zeros(input_shape, dtype=self.config.dtype)
+            token_type_ids = torch.zeros(input_shape, dtype=self.dtype)
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        extended_attention_mask: jt.Var = self.get_extended_attention_mask(
+        extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(
             attention_mask, input_shape, past_key_values_length
         )
 
@@ -299,7 +290,7 @@ class Roformer(Module):
             ) = encoder_hidden_states.size()
             encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
             if encoder_attention_mask is None:
-                encoder_attention_mask = jt.ones(encoder_hidden_shape)
+                encoder_attention_mask = torch.ones(encoder_hidden_shape)
             encoder_extended_attention_mask = self.invert_attention_mask(
                 encoder_attention_mask
             )
@@ -350,9 +341,9 @@ class Roformer(Module):
 
     # 添加了个past_key_values_length
     def get_extended_attention_mask(self, attention_mask: jt.Var, input_shape, past_key_values_length):
-        if attention_mask.ndim == 3:
+        if attention_mask.dim() == 3:
             extended_attention_mask = attention_mask[:, None, :, :]
-        elif attention_mask.ndim == 2:
+        elif attention_mask.dim() == 2:
             if self.config.is_decoder and past_key_values_length > 0: # 第一次编码的时候不需要使用decoder mask，之后的需要decoder mask。
                 extended_attention_mask = self.create_extended_attention_mask_for_decoder(
                     input_shape, attention_mask
@@ -369,13 +360,13 @@ class Roformer(Module):
         # positions we want to attend and -10000.0 for masked positions.
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
-        extended_attention_mask = extended_attention_mask.to(dtype=self.config.dtype)  # fp16 compatibility
+        extended_attention_mask = extended_attention_mask.to(dtype=self.dtype)  # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
         return extended_attention_mask
 
     def create_extended_attention_mask_for_decoder(input_shape, attention_mask, device=None):
         batch_size, seq_length = input_shape
-        seq_ids = jt.arange(seq_length)
+        seq_ids = torch.arange(seq_length)
         causal_mask = seq_ids[None, None, :].repeat(batch_size, seq_length, 1) <= seq_ids[None, :, None]
         # in case past_key_values are used we need to add a prefix ones mask to the causal mask
         # causal and attention masks must have same type with pytorch version < 1.3
@@ -383,9 +374,9 @@ class Roformer(Module):
 
         if causal_mask.shape[1] < attention_mask.shape[1]:
             prefix_seq_len = attention_mask.shape[1] - causal_mask.shape[1]
-            causal_mask = jt.cat(
+            causal_mask = torch.cat(
                 [
-                    jt.ones((batch_size, seq_length, prefix_seq_len), dtype=causal_mask.dtype),
+                    torch.ones((batch_size, seq_length, prefix_seq_len), dtype=causal_mask.dtype),
                     causal_mask,
                 ],
                 axis=-1,
@@ -395,8 +386,8 @@ class Roformer(Module):
         return extended_attention_mask
     
     def get_head_mask(
-        self, head_mask: Optional[jt.Var], num_hidden_layers: int, is_attention_chunked: bool = False
-    ) -> jt.Var:
+        self, head_mask: Optional[torch.Tensor], num_hidden_layers: int, is_attention_chunked: bool = False
+    ) -> torch.Tensor:
         """
         Prepare the head mask if needed.
 
@@ -423,17 +414,17 @@ class Roformer(Module):
     
     def _convert_head_mask_to_5d(self, head_mask, num_hidden_layers):
         """-> [num_hidden_layers x batch x num_heads x seq_length x seq_length]"""
-        if head_mask.ndim == 1:
+        if head_mask.dim() == 1:
             head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
             head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
-        elif head_mask.ndim == 2:
+        elif head_mask.dim() == 2:
             head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # We can specify head_mask for each layer
-        assert head_mask.ndim == 5, f"head_mask.dim != 5, instead {head_mask.ndim}"
-        head_mask = head_mask.to(dtype=self.config.dtype)  # switch to float if need + fp16 compatibility
+        assert head_mask.dim() == 5, f"head_mask.dim != 5, instead {head_mask.dim()}"
+        head_mask = head_mask.to(dtype=self.dtype)  # switch to float if need + fp16 compatibility
         return head_mask
 
 # DONE
-class Embeddings(Module):
+class Embeddings(nn.Module):
     def __init__(self, config):
         super(Embeddings, self).__init__()
         self.word_embeddings = nn.Embedding(config.vocab_size, config.embedding_size, padding_idx=config.pad_token_id)
@@ -444,7 +435,7 @@ class Embeddings(Module):
         # Dropout
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def execute(self, input_ids=None, token_type_ids=None, inputs_embeds=None):
+    def forward(self, input_ids=None, token_type_ids=None, inputs_embeds=None):
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -454,8 +445,8 @@ class Embeddings(Module):
             inputs_embeds = self.word_embeddings(input_ids)
 
         if token_type_ids is None:
-            token_type_ids = jt.zeros(
-                input_shape, dtype=jt.to(jt.int64) , device=inputs_embeds.device
+            token_type_ids = torch.zeros(
+                input_shape, dtype=torch.to(torch.Long) , device=inputs_embeds.device
             ) # torch.long is equivalent to to(torch.int64)
 
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
@@ -490,23 +481,23 @@ class SinusoidalPositionalEmbedding(nn.Embedding):
         )
         out.requires_grad = False  # set early to avoid an error in pytorch-1.8+
         sentinel = dim // 2 if dim % 2 == 0 else (dim // 2) + 1
-        out[:, 0:sentinel] = jt.float16(np.sin(position_enc[:, 0::2]))
-        out[:, sentinel:] = jt.float16(np.cos(position_enc[:, 1::2]))
+        out[:, 0:sentinel] = torch.float16(np.sin(position_enc[:, 0::2]))
+        out[:, sentinel:] = torch.float16(np.cos(position_enc[:, 1::2]))
         out.detach_inplace()
         return out
 
-    @jt.no_grad()
-    def execute(self, seq_len: int, past_key_values_length: int = 0):
+    @torch.no_grad()
+    def forward(self, seq_len: int, past_key_values_length: int = 0):
         """`input_ids_shape` is expected to be [bsz x seqlen]."""
-        positions = jt.arange(
+        positions = torch.arange(
             start=past_key_values_length,
             end=past_key_values_length + seq_len,
-            dtype=jt.int64,
+            dtype=torch.Long,
         )
-        return super().execute(positions)
+        return super().forward(positions)
 
 
-class Encoder(Module):
+class Encoder(nn.Module):
     def __init__(self, config):
         super(Encoder, self).__init__()
         self.config = config
@@ -519,7 +510,7 @@ class Encoder(Module):
         )
         self.gradient_checkpointing = False
 
-    def execute(
+    def forward(
             self,
         hidden_states,
         attention_mask=None,
@@ -563,8 +554,9 @@ class Encoder(Module):
                 past_key_value,
                 output_attentions,
             )
+            # pdb.set_trace()
 
-            hidden_states = layer_outputs[0] # Data leak?
+            hidden_states = layer_outputs[0]
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)
             if output_attentions:
@@ -596,7 +588,7 @@ class Encoder(Module):
         )
 
 
-class Layer(Module):
+class Layer(nn.Module):
     def __init__(self, config):
         super(Layer, self).__init__()
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
@@ -613,7 +605,7 @@ class Layer(Module):
         self.intermediate = Intermediate(config)
         self.output = Output(config)
 
-    def execute(self, hidden_states, attention_mask=None, sinusoidal_pos=None,
+    def forward(self, hidden_states, attention_mask=None, sinusoidal_pos=None,
                 head_mask=None, encoder_hidden_states=None, encoder_attention_mask=None,
                 past_key_value=None, output_attentions=False):
         # attention_output = self.attention(hidden_states, attention_mask)
@@ -689,8 +681,8 @@ class Layer(Module):
         return outputs
 
     def apply_chunking_to_forward(self,
-        forward_fn: Callable[..., jt.Var], chunk_size: int, chunk_dim: int, *input_tensors
-    ) -> jt.Var:
+        forward_fn: Callable[..., torch.Tensor], chunk_size: int, chunk_dim: int, *input_tensors
+    ) -> torch.Tensor:
         """
         This function chunks the `input_tensors` into smaller input tensor parts of size `chunk_size` over the dimension
         `chunk_dim`. It then applies a layer `forward_fn` to each chunk independently to save memory.
@@ -758,7 +750,7 @@ class Layer(Module):
             # apply forward fn to every tuple
             output_chunks = tuple(forward_fn(*input_tensors_chunk) for input_tensors_chunk in zip(*input_tensors_chunks))
             # concatenate output at same dimension
-            return jt.cat(output_chunks, dim=chunk_dim)
+            return torch.cat(output_chunks, dim=chunk_dim)
 
         return forward_fn(*input_tensors)
     
@@ -768,7 +760,7 @@ class Layer(Module):
         return layer_output
         
 # DONE?
-class Attention(Module):
+class Attention(nn.Module):
     def __init__(self, config):
         super(Attention, self).__init__()
         self.self = SelfAttention(config)
@@ -813,7 +805,7 @@ class Attention(Module):
             n_heads: int, 
             head_size: int, 
             already_pruned_heads: Set[int]
-    ) -> Tuple[Set[int], jt.int64]:
+    ) -> Tuple[Set[int], torch.Long]:
         """
         Finds the heads and their indices taking :obj:`already_pruned_heads` into account.
         Args:
@@ -826,13 +818,13 @@ class Attention(Module):
             `Tuple[Set[int], torch.LongTensor]`: A tuple with the indices of heads to prune taking `already_pruned_heads`
             into account and the indices of rows/columns to keep in the layer weight.
         """
-        mask = jt.ones(n_heads, head_size)
+        mask = torch.ones(n_heads, head_size)
         heads = set(heads) - already_pruned_heads
         for head in heads:
             head = head - sum(1 if h < head else 0 for h in already_pruned_heads)
             mask[head] = 0
         mask = mask.view(-1).contiguous().eq(1)
-        index = jt.arange(len(mask))[mask].long()
+        index = torch.arange(len(mask))[mask].long()
         return heads, index
 
     # Copied from transformers.models.bert.modeling_bert.BertAttention.prune_heads
@@ -859,7 +851,7 @@ class Attention(Module):
         )
         self.pruned_heads = self.pruned_heads.union(heads)
 
-    def execute(
+    def forward(
         self,
         hidden_states,
         attention_mask=None,
@@ -888,7 +880,7 @@ class Attention(Module):
 
 
 # DONE? (should be, i need to run it)
-class SelfAttention(Module):
+class SelfAttention(nn.Module):
     def __init__(self, config):
         super(SelfAttention, self).__init__()
 
@@ -912,12 +904,12 @@ class SelfAttention(Module):
         self.rotary_value = config.rotary_value
 
     # reshape and permute the dims to prepare for the attention head splitting
-    def transpose_for_scores(self, x: jt.Var):
+    def transpose_for_scores(self, x: torch.Tensor):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.reshape(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def execute(
+    def forward(
         self,
         hidden_states,
         attention_mask=None,
@@ -951,8 +943,8 @@ class SelfAttention(Module):
             key_layer = self.apply_rotary(key_layer, sinusoidal_pos)
             if self.rotary_value:
                 value_layer = self.apply_rotary(value_layer, sinusoidal_pos)
-            key_layer = jt.concat([past_key_value[0], key_layer], dim=-2)
-            value_layer = jt.concat([past_key_value[1], value_layer], dim=-2)
+            key_layer = torch.concat([past_key_value[0], key_layer], dim=-2)
+            value_layer = torch.concat([past_key_value[1], value_layer], dim=-2)
 
         else:
             key_layer = self.transpose_for_scores(self.key(hidden_states))
@@ -965,16 +957,16 @@ class SelfAttention(Module):
             past_key_value = (key_layer, value_layer)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = jt.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-        # if attention_mask is not None:  TODO
-        #     print("ATTENTION MASK: ", attention_mask.shape)
-        #     print("ATTENTION SCORES: ", attention_scores.shape)
-        #     # Apply the attention mask
-        #     attention_scores = attention_scores + attention_mask
+        if attention_mask is not None: 
+            # print("ATTENTION MASK: ", attention_mask.shape)
+            # print("ATTENTION SCORES: ", attention_scores.shape)
+            # Apply the attention mask
+            attention_scores = attention_scores + attention_mask
 
         # Normalize the attention scores to probabilities.
-        attention_probs = nn.softmax(attention_scores, dim=-1)
+        attention_probs = nn.functional.softmax(attention_scores, dim=-1)
         attention_probs = self.dropout(attention_probs)
 
         # mask heads if we want to
@@ -982,11 +974,11 @@ class SelfAttention(Module):
             attention_probs = attention_probs * head_mask
 
         # context layer
-        context_layer: jt.Var = jt.matmul(attention_probs, value_layer)
+        context_layer: torch.Tensor = torch.matmul(attention_probs, value_layer)
 
-        context_layer = jt.reshape(context_layer.permute(0, 2, 1, 3), hidden_states.shape) # TODO: CHECK
+        context_layer = torch.reshape(context_layer.permute(0, 2, 1, 3), hidden_states.shape) # TODO: CHECK
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-        # context_layer = jt.reshape(context_layer, *new_context_layer_shape) # TODO: CHECK
+        context_layer = torch.reshape(context_layer, *new_context_layer_shape) # TODO: CHECK
 
         outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
 
@@ -1000,33 +992,33 @@ class SelfAttention(Module):
         x1, x2 = x[..., 0::2], x[..., 1::2]
         x1_rot = x1 * cos - x2 * sin
         x2_rot = x1 * sin + x2 * cos
-        x = jt.stack([x1_rot, x2_rot], dim=-1)
+        x = torch.stack([x1_rot, x2_rot], dim=-1)
         x = x.flatten(-2, -1)
         return x
 
 # DONE
-class SelfOutput(Module):
+class SelfOutput(nn.Module):
     def __init__(self, config):
         super(SelfOutput, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size, bias=config.use_bias)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) if config.norm_type == 'layer_norm' else Norm(eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def execute(self, hidden_states, input_tensor):
+    def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
 
 # DONE
-class Output(Module):
+class Output(nn.Module):
     def __init__(self, config):
         super(Output, self).__init__()
         self.dense = nn.Linear(config.intermediate_size, config.hidden_size, bias=config.use_bias)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) if config.norm_type == 'layer_norm' else Norm(eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def execute(self, hidden_states, input_tensor):
+    def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
@@ -1034,37 +1026,37 @@ class Output(Module):
 
 
 # DONE
-class Intermediate(Module):
+class Intermediate(nn.Module):
     def __init__(self, config):
         super(Intermediate, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size, bias=config.use_bias)
         self.intermediate_act_fn = nn.GELU() # just using GELU instead of ACT2FN[config.hidden_act]
 
-    def execute(self, hidden_states):
+    def foward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.intermediate_act_fn(hidden_states)
         return hidden_states
 
 # DONE
-class Norm(Module):
+class Norm(nn.Module):
     def __init__(self, eps):
         super(Norm, self).__init__()
         self.eps = eps
 
-    def execute(self, x):
-        variance = jt.mean(x**2, dim=-1, keepdims=True)
-        x = x * jt.rsqrt(variance + self.eps)
+    def forward(self, x):
+        variance = torch.mean(x**2, dim=-1, keepdims=True)
+        x = x * torch.rsqrt(variance + self.eps)
         return x
 
 #####################################################
 
 # Only MLM Head
-class Cls(Module):
+class Cls(nn.Module):
     def __init__(self, config):
         super(Cls, self).__init__()
         self.predictions = RoFormerLMPredictionHead(config) if config.norm_type=="layer_norm" else RoFormerV2LMPredictionHead(config)
 
-    def execute(self, hidden_states):
+    def forward(self, hidden_states):
         hidden_states = self.predictions(hidden_states)
         return hidden_states
     
@@ -1077,41 +1069,41 @@ class RoFormerV2LMPredictionHead(nn.Module):
     def forward(self, hidden_states):
         return self.decoder(hidden_states)
 
-class RoFormerLMPredictionHead(Module):
+class RoFormerLMPredictionHead(nn.Module):
     def __init__(self, config):
         super(RoFormerLMPredictionHead, self).__init__()
         self.transform = PredictionHeadTransform(config)
         # Assuming the output dimension for the decoder matches the vocabulary size or embedding_num
         self.decoder = nn.Linear(config.embedding_size, config.vocab_size, bias=False)
-        self.bias = jt.zeros(config.vocab_size)
+        self.bias = torch.zeros(config.vocab_size)
 
         self.decoder.bias = self.bias
 
-    def execute(self, hidden_states):
+    def forward(self, hidden_states):
         hidden_states = self.transform(hidden_states)
         hidden_states = self.decoder(hidden_states)
         return hidden_states
 
-class PredictionHeadTransform(Module):
+class PredictionHeadTransform(nn.Module):
     def __init__(self, config):
         super(PredictionHeadTransform, self).__init__()
         self.dense = nn.Linear(config.hidden_size, config.embedding_size)
         self.transform_act_fn = nn.GELU()
         self.LayerNorm = nn.LayerNorm(config.embedding_size, eps=config.layer_norm_eps)
 
-    def execute(self, hidden_states):
+    def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.transform_act_fn(hidden_states)
         hidden_states = self.LayerNorm(hidden_states)
         return hidden_states
 
-class RoFormerPooler(Module):
+class RoFormerPooler(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         # self.activation = ACT2FN[config.pooler_activation]
 
-    def execute(self, hidden_states):
+    def forward(self, hidden_states):
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
         first_token_tensor = hidden_states[:, 0]

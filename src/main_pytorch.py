@@ -20,8 +20,7 @@ model = RoFormerForCausalLM.from_pretrained(pretrained_model, config=config)
 model.to(device)
 model.eval()
 
-def gen_synonyms(text, n=1
-, k=20):
+def gen_synonyms(text, n=100, k=20):
     ''''含义： 产生sent的n个相似句，然后返回最相似的k个。
     做法：用seq2seq生成，并用encoder算相似度并排序。
     '''
@@ -32,12 +31,12 @@ def gen_synonyms(text, n=1
     for _ in range(n):
         print("Generating... ", _ , "/", n)
         inputs1.to(device)
-        # generation = model.generate(**inputs1, top_p=0.95, do_sample=True, max_length=128)
+        generation = model.generate(**inputs1, top_p=0.95, do_sample=True, max_length=128)
         
-        generation2 = model.generate2(**inputs1, top_p=0.95, do_sample=True, max_length=128)
+        # generation2 = model.generate2(**inputs1, top_p=0.95, do_sample=True, max_length=128)
         
         # output = tokenizer.batch_decode(generation, skip_special_tokens=True)[0].replace(" ","").replace(text, "") # 去除空格，去除原始text文本。
-        output2 = tokenizer.batch_decode(generation2, skip_special_tokens=True)[0].replace(" ","").replace(text, "") # 去除空格，去除原始text文本。
+        output2 = tokenizer.batch_decode(generation, skip_special_tokens=True)[0].replace(" ","").replace(text, "") # 去除空格，去除原始text文本。
         # print("generation: ", output)
         # print("generation2: ", output2)
         # pdb.set_trace()
