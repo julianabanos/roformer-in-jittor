@@ -1,8 +1,7 @@
-# roformer_ann_2023
+# Jittor Roformer Implementation
 
-ANN Final Project.
+This project was first completed as a final assignment for the Artificial Neural Networks Course for the 2023 Fall Semester at Tsinghua University.
 RoFormer Model Implementation using the Jittor Framework.
-For THU ANN 2023 Fall.
 
 ## Run
 
